@@ -15,8 +15,6 @@ import android.net.NetworkCapabilities;
 import android.net.NetworkInfo;
 import android.net.NetworkRequest;
 import android.os.Build;
-import android.os.Handler;
-import android.os.Looper;
 
 import com.facebook.react.bridge.ReactApplicationContext;
 import com.reactnativecommunity.netinfo.types.CellularGeneration;
@@ -29,20 +27,7 @@ import com.reactnativecommunity.netinfo.types.ConnectionType;
  */
 @TargetApi(Build.VERSION_CODES.N)
 public class NetworkCallbackConnectivityReceiver extends ConnectivityReceiver {
-    private static final int DELAY_MS = 250;
     private final ConnectivityNetworkCallback mNetworkCallback;
-
-    // from the docs:
-    // "Do NOT call ConnectivityManager.getNetworkCapabilities(android.net.Network)
-    // or ConnectivityManager.getLinkProperties(android.net.Network) or other
-    // synchronous ConnectivityManager methods in this callback as this is
-    // prone to race conditions ; calling these methods while in a callback
-    // may return an outdated or even a null object."
-    // https://developer.android.com/reference/android/net/ConnectivityManager.NetworkCallback
-    // For this reason, we will fetch these values when not provided by the callback
-    // on an asynchronous thread.
-    private Network mNetwork = null;
-    private NetworkCapabilities mCapabilities = null;
 
     public NetworkCallbackConnectivityReceiver(ReactApplicationContext reactContext) {
         super(reactContext);
@@ -73,37 +58,39 @@ public class NetworkCallbackConnectivityReceiver extends ConnectivityReceiver {
 
     @SuppressLint("MissingPermission")
     void updateAndSend() {
+        Network network = getConnectivityManager().getActiveNetwork();
+        NetworkCapabilities capabilities = getConnectivityManager().getNetworkCapabilities(network);
         ConnectionType connectionType = ConnectionType.UNKNOWN;
         CellularGeneration cellularGeneration = null;
         NetworkInfo networkInfo = null;
         boolean isInternetReachable = false;
         boolean isInternetSuspended = false;
 
-        if (mCapabilities != null) {
+        if (capabilities != null) {
             // Get the connection type
-            if (mCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_BLUETOOTH)) {
+            if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_BLUETOOTH)) {
                 connectionType = ConnectionType.BLUETOOTH;
-            } else if (mCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) {
+            } else if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) {
                 connectionType = ConnectionType.CELLULAR;
-            } else if (mCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)) {
+            } else if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)) {
                 connectionType = ConnectionType.ETHERNET;
-            } else if (mCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
+            } else if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
                 connectionType = ConnectionType.WIFI;
-            } else if (mCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) {
+            } else if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) {
                 connectionType = ConnectionType.VPN;
             }
 
-            if (mNetwork != null) {
+            if (network != null) {
                 // This may return null per API docs, and is deprecated, but for older APIs (< VERSION_CODES.P)
                 // we need it to test for suspended internet
-                networkInfo = getConnectivityManager().getNetworkInfo(mNetwork);
+                networkInfo = getConnectivityManager().getNetworkInfo(network);
             }
 
             // Check to see if the network is temporarily unavailable or if airplane mode is toggled on
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                isInternetSuspended = !mCapabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED);
+                isInternetSuspended = !capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED);
             } else {
-                if (mNetwork != null && networkInfo != null) {
+                if (network != null && networkInfo != null) {
                     NetworkInfo.DetailedState detailedConnectionState = networkInfo.getDetailedState();
                     if (!detailedConnectionState.equals(NetworkInfo.DetailedState.CONNECTED)) {
                         isInternetSuspended = true;
@@ -112,13 +99,13 @@ public class NetworkCallbackConnectivityReceiver extends ConnectivityReceiver {
             }
 
             isInternetReachable =
-                    mCapabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                            && mCapabilities.hasCapability(
+                    capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                            && capabilities.hasCapability(
                             NetworkCapabilities.NET_CAPABILITY_VALIDATED)
                             && !isInternetSuspended;
 
             // Get the cellular network type
-            if (mNetwork != null && connectionType == ConnectionType.CELLULAR && isInternetReachable) {
+            if (network != null && connectionType == ConnectionType.CELLULAR && isInternetReachable) {
                 cellularGeneration = CellularGeneration.fromNetworkInfo(networkInfo);
             }
         } else {
@@ -128,58 +115,36 @@ public class NetworkCallbackConnectivityReceiver extends ConnectivityReceiver {
         updateConnectivity(connectionType, cellularGeneration, isInternetReachable);
     }
 
-    private void asyncUpdateAndSend() {
-        new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
-            @Override
-            public void run() {
-                mCapabilities = getConnectivityManager().getNetworkCapabilities(mNetwork);
-                updateAndSend();
-
-            }
-        }, DELAY_MS);
-    }
-
     private class ConnectivityNetworkCallback extends ConnectivityManager.NetworkCallback {
         @Override
         public void onAvailable(Network network) {
-            mNetwork = network;
-            asyncUpdateAndSend();
+            updateAndSend();
         }
 
         @Override
         public void onLosing(Network network, int maxMsToLive) {
-            mNetwork = network;
             updateAndSend();
         }
 
         @Override
         public void onLost(Network network) {
-            mNetwork = null;
-            mCapabilities = null;
             updateAndSend();
         }
 
         @Override
         public void onUnavailable() {
-            mNetwork = null;
-            mCapabilities = null;
             updateAndSend();
         }
 
         @Override
         public void onCapabilitiesChanged(
                 Network network, NetworkCapabilities networkCapabilities) {
-            mNetwork = network;
-            mCapabilities = networkCapabilities;
             updateAndSend();
         }
 
         @Override
         public void onLinkPropertiesChanged(Network network, LinkProperties linkProperties) {
-            if (mNetwork != null) {
-                mNetwork = network;
-            }
-            asyncUpdateAndSend();
+            updateAndSend();
         }
     }
 }
